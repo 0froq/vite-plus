@@ -211,7 +211,7 @@ Use these when you need lower-level package-manager behavior.
   - **Dependencies**: `ci`, `prune`, `list`, `rebuild`, `approve-builds`
   - **Patching**: `patch`, `patch-commit`
   - **Packaging and publishing**: `pack`, `version`, `publish`, `stage`, `dist-tag`, `deprecate`
-  - **Inspection**: `view`, `search`, `audit`, `fund`, `ping`
+  - **Inspection**: `view`, `search`, `licenses`, `audit`, `fund`, `ping`
   - **Authentication and access**: `login`, `logout`, `whoami`, `token`, `owner`
   - **Configuration**: `config`, `cache`
   - **Package manifest**: `pkg get`, `pkg set`, `pkg delete`, `pkg fix`
