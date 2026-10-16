@@ -46,13 +46,16 @@ If no directory declares a version, Vite+ uses the global default (`vp env defau
 ::: tip Using pnpm with Vite+ runtime management
 pnpm can also manage the runtime declared in `devEngines.runtime`. When both pnpm and Vite+ manage Node.js, they can download the same version separately or select different versions, causing inconsistent behavior between commands.
 
-If you want Vite+ to manage Node.js, pnpm 11+ supports disabling pnpm's automatic runtime management globally with [`runtimeOnFail`](https://pnpm.io/settings/cli#runtimeonfail):
+If your project uses Vite+ to manage Node.js and pnpm versions, add these settings to the project's `pnpm-workspace.yaml` (pnpm 11+):
 
-```bash
-pnpm config set --global runtimeOnFail ignore
+```yaml
+runtimeOnFail: ignore
+pmOnFail: ignore
 ```
 
-This setting also disables pnpm's automatic management of other declared runtimes, including Bun and Deno. Consider whether any of your projects rely on that behavior before setting it globally.
+[`runtimeOnFail`](https://pnpm.io/settings/cli#runtimeonfail) disables pnpm's automatic management of declared runtimes. [`pmOnFail`](https://pnpm.io/settings/cli#pmonfail) prevents pnpm from switching to the package-manager version declared in `package.json`. Commit these settings so the project shares the same policy.
+
+`runtimeOnFail: ignore` also affects other declared runtimes, including Bun and Deno. If the project relies on pnpm to manage them, consider that before enabling this setting. Switching an existing project to this policy can change runtime entries in `pnpm-lock.yaml` on the next install; review and commit those changes with the configuration.
 :::
 
 ## Package-Manager Selection
@@ -87,7 +90,7 @@ VP_PACKAGE_MANAGER=pnpm@10.18.0 vp install
 VP_PNPM_VERSION=10.20.0 pnpm --version
 ```
 
-The overrides apply in managed mode. A package manager can also perform its own version switching after Vite+ launches it; for example, pnpm's `managePackageManagerVersions` setting may switch back to the version in `package.json`.
+The overrides apply in managed mode. A package manager can also perform its own version switching after Vite+ launches it; for example, pnpm 11+'s [`pmOnFail`](https://pnpm.io/settings/cli#pmonfail) defaults to `download` and may switch back to the version in `package.json`. To let Vite+ control the pnpm version, set `pmOnFail: ignore` in the project's `pnpm-workspace.yaml`. In pnpm 10, the corresponding setting is `managePackageManagerVersions`.
 
 A project selection applies only to its matching shims. For example, pnpm controls `pnpm`, `pnpx`, `pn`, and `pnx`; invoking `npm` still resolves npm independently. Without a matching project selection, a named shim uses its configured default version and otherwise uses the latest release without prompting. The npm shim falls back to Node's bundled npm. `vp env use npm` selects standalone npm's latest release for the current shell when no project version or global default is configured.
 
