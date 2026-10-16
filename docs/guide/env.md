@@ -76,7 +76,7 @@ Package-manager selection uses this priority:
 | `VP_YARN_VERSION` | `yarn`, `yarnpkg`           |
 | `VP_BUN_VERSION`  | `bun`, `bunx`               |
 
-These variables accept a version or range, such as `10.18.0`, `10`, or `latest`, and override the matching shim's project and default versions. They do not change the manager or version selected by `vp install`.
+These variables accept a version, range, or npm dist-tag, such as `10.18.0`, `10`, `latest`, or `latest-10`, and override the matching shim's project and default versions. They do not change the manager or version selected by `vp install`.
 
 `vp env use pnpm@10.20.0` sets `VP_PNPM_VERSION` for the current shell, just as `vp env use node@22` sets `VP_NODE_VERSION`. Each package manager has its own override, so switching Yarn does not clear a pnpm override. `vp env use` does not set or clear `VP_PACKAGE_MANAGER`.
 
@@ -91,8 +91,10 @@ The overrides apply in managed mode. A package manager can also perform its own 
 
 A project selection applies only to its matching shims. For example, pnpm controls `pnpm`, `pnpx`, `pn`, and `pnx`; invoking `npm` still resolves npm independently. Without a matching project selection, a named shim uses its configured default version and otherwise uses the latest release without prompting. The npm shim falls back to Node's bundled npm. `vp env use npm` selects standalone npm's latest release for the current shell when no project version or global default is configured.
 
-::: details Latest-version caching
-When a named shim falls back to the latest release, the resolved version is cached for one hour. An expired cache remains available when the registry cannot be reached.
+Package-manager specs follow npm's order: an exact version, then a semver range, then a dist-tag. `default` is an alias of `latest`, except for npm, where it selects the npm on `PATH`.
+
+::: details Dist-tag caching
+When a package-manager dist-tag such as `latest` or `latest-10` is resolved, including a named shim falling back to the latest release, the resolved version is cached for one hour. An expired cache remains available when the registry cannot be reached.
 :::
 
 `pn` runs the same managed binary as `pnpm`, and `pnx` runs the same managed binary as `pnpx` (`pnpm dlx`). These aliases also work with managed pnpm versions older than v11.
@@ -181,7 +183,7 @@ The global CLI supports Tab completion in Bash, Zsh, Fish, Nushell, and PowerShe
 ### Manage
 
 - `vp env default` shows the global Node.js default and each configured package-manager version. Bare versions set Node.js; qualified specs such as `pnpm@10.18.0` set that package manager's shim default without replacing the defaults for Bun, Yarn, or npm. `--unset` clears all defaults unless scoped.
-- `vp env default <lts|latest>` and `<package-manager>@latest` re-resolve on each use, so the default follows new releases, including new majors. Other versions and ranges, such as `24` or `pnpm@10`, resolve to an exact version when set.
+- `vp env default <lts|latest>` and package-manager dist-tags such as `pnpm@latest` or `pnpm@latest-10` re-resolve on each use, so the default follows the tag, including new majors for `latest`. Other versions and ranges, such as `24` or `pnpm@10`, resolve to an exact version when set.
 - `vp env pin` shows or writes project pins. Existing `.node-version` and top-level `packageManager` fields keep being updated for compatibility. An existing `.nvmrc` is updated when it is the effective Node source in the current directory; its comments and other non-version content are preserved. Otherwise Vite+ writes the matching `devEngines` entry. Use `--target node-version`, `--target nvmrc`, `--target dev-engines`, or `--target package-manager` to choose explicitly. Pinning in a child directory does not modify an inherited `.nvmrc`.
 - `vp env unpin` removes both effective pins by default; append a selector to remove one. Lower-priority declarations are not deleted.
 - `vp env use` activates the complete project environment. Explicit specs override selected components; `--unset` clears both unless scoped.
@@ -217,7 +219,9 @@ vp env print                  # Print PATH setup for both components
 
 # Manage
 vp env pin lts                # Pin Node.js only to an exact version
+vp env pin node@26            # Pin Node.js 26 to an exact version
 vp env pin lts pnpm@10        # Pin both project components to exact versions
+vp env pin pnpm@latest-10     # Pin pnpm to the version of its latest-10 dist-tag
 vp env install                # Install the complete resolved environment
 vp env use 20 pnpm@10         # Override both components for this shell
 vp env use --unset pnpm       # Remove only the pnpm session version
