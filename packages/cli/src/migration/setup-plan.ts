@@ -21,6 +21,7 @@ import {
   detectEslintProject,
   detectIncompatibleEslintIntegration,
   detectTsupProject,
+  hasExistingViteHooksPolicy,
   preflightGitHooksSetup,
   warnIncompatibleEslintIntegration,
   warnLegacyEslintConfig,
@@ -45,7 +46,15 @@ async function collectGitHooksDecision(
   options: MigrationOptions,
   packages: readonly WorkspacePackage[] = [],
 ): Promise<boolean> {
-  let shouldSetupHooks = await promptGitHooks(options);
+  let shouldSetupHooks: boolean;
+  if (options.hooks === undefined && hasExistingViteHooksPolicy(rootDir)) {
+    // Existing project-owned Vite+ hooks are kept unchanged by setupGitHooks,
+    // so there is nothing to ask.
+    prompts.log.info('Git hooks already configured');
+    shouldSetupHooks = true;
+  } else {
+    shouldSetupHooks = await promptGitHooks(options);
+  }
   if (shouldSetupHooks) {
     const reason = preflightGitHooksSetup(rootDir, packageManager, packages);
     if (reason) {

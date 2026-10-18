@@ -9645,6 +9645,25 @@ describe('Git hook setup policy', () => {
     expect(plan.shouldSetupHooks).toBe(false);
   });
 
+  it('keeps existing Vite+ hooks without prompting when hooks option is unset', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
+    fs.mkdirSync(path.join(tmpDir, '.vite-hooks'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.vite-hooks', 'pre-commit'), 'vp staged\n');
+
+    const plan = await collectMigrationSetupPlan(
+      tmpDir,
+      PackageManager.pnpm,
+      { interactive: true, agent: false, editor: false },
+      [],
+      false,
+    );
+
+    expect(plan.shouldSetupHooks).toBe(true);
+    expect(fs.readFileSync(path.join(tmpDir, '.vite-hooks', 'pre-commit'), 'utf8')).toBe(
+      'vp staged\n',
+    );
+  });
+
   it('preserves staged config for a package created inside an existing monorepo', () => {
     fs.writeFileSync(
       path.join(tmpDir, 'package.json'),
