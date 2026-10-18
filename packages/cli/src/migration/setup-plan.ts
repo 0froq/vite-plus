@@ -14,13 +14,15 @@ import {
   isJsonLikeFile,
   selectEditor,
 } from '../utils/editor.ts';
-import { cancelAndExit, promptGitHooks } from '../utils/prompts.ts';
+import { cancelAndExit, promptExistingGitHooks, promptGitHooks } from '../utils/prompts.ts';
 import {
   confirmEslintMigration,
   confirmTsupMigration,
   detectEslintProject,
   detectIncompatibleEslintIntegration,
   detectTsupProject,
+  hasExistingViteHooksPolicy,
+  listExistingViteHookNames,
   preflightGitHooksSetup,
   warnIncompatibleEslintIntegration,
   warnLegacyEslintConfig,
@@ -45,7 +47,10 @@ async function collectGitHooksDecision(
   options: MigrationOptions,
   packages: readonly WorkspacePackage[] = [],
 ): Promise<boolean> {
-  let shouldSetupHooks = await promptGitHooks(options);
+  let shouldSetupHooks =
+    options.hooks === undefined && options.interactive && hasExistingViteHooksPolicy(rootDir)
+      ? await promptExistingGitHooks(listExistingViteHookNames(rootDir))
+      : await promptGitHooks(options);
   if (shouldSetupHooks) {
     const reason = preflightGitHooksSetup(rootDir, packageManager, packages);
     if (reason) {

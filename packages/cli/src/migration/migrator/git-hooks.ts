@@ -86,6 +86,16 @@ export function hasExistingViteHooksPolicy(projectPath: string): boolean {
     .some((entry) => entry.isFile() && SUPPORTED_GIT_HOOK_NAME_SET.has(entry.name));
 }
 
+/**
+ * List the supported hook files present in `.vite-hooks/`, in canonical order.
+ */
+export function listExistingViteHookNames(projectPath: string): string[] {
+  const hooksDir = path.join(projectPath, '.vite-hooks');
+  return SUPPORTED_GIT_HOOK_NAMES.filter((hookName) =>
+    fs.lstatSync(path.join(hooksDir, hookName), { throwIfNoEntry: false })?.isFile(),
+  );
+}
+
 function findNonRegularViteHookPath(projectPath: string): string | null {
   for (const hookName of SUPPORTED_GIT_HOOK_NAMES) {
     const hookPath = path.join(projectPath, '.vite-hooks', hookName);
