@@ -96,6 +96,41 @@ export function listExistingViteHookNames(projectPath: string): string[] {
   );
 }
 
+/**
+ * Whether Vite+ hooks are already fully set up for this project, i.e. running
+ * the hooks step again would have nothing left to do. Hook files in
+ * `.vite-hooks/` alone are not enough; full setup also requires:
+ *
+ * - a `prepare` script that runs `vp config` (refreshes the dispatcher), and
+ * - at the git repository root, `core.hooksPath` pointing at `.vite-hooks/_`
+ *   with the generated dispatcher (`_/h`) and a stub for every project hook.
+ */
+export function isViteHooksSetupComplete(projectPath: string): boolean {
+  if (!hasExistingViteHooksPolicy(projectPath)) {
+    return false;
+  }
+  const packageJsonPath = path.join(projectPath, 'package.json');
+  if (!fs.existsSync(packageJsonPath)) {
+    return false;
+  }
+  const pkg = readJsonFile(packageJsonPath) as { scripts?: Record<string, string> };
+  if (!pkg.scripts?.prepare?.includes('vp config')) {
+    return false;
+  }
+  const gitRoot = findGitRoot(projectPath);
+  if (!gitRoot || path.resolve(projectPath) !== path.resolve(gitRoot)) {
+    return false;
+  }
+  if (normalizeGitHooksPath(getConfiguredHooksPath(projectPath)) !== '.vite-hooks/_') {
+    return false;
+  }
+  const dispatcherDir = path.join(projectPath, '.vite-hooks', '_');
+  return ['h', ...listExistingViteHookNames(projectPath)].every(
+    (name) =>
+      fs.lstatSync(path.join(dispatcherDir, name), { throwIfNoEntry: false })?.isFile() ?? false,
+  );
+}
+
 function findNonRegularViteHookPath(projectPath: string): string | null {
   for (const hookName of SUPPORTED_GIT_HOOK_NAMES) {
     const hookPath = path.join(projectPath, '.vite-hooks', hookName);

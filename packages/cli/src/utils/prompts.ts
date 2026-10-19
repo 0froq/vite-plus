@@ -244,36 +244,6 @@ export async function upgradeYarn(cwd: string, interactive?: boolean, silent = f
   }
 }
 
-/**
- * Ask what to do with project-owned Vite+ hooks that already exist.
- * Returns true to keep them (hook setup leaves existing hooks unchanged),
- * false to skip git hooks setup entirely.
- */
-export async function promptExistingGitHooks(hookNames: readonly string[]): Promise<boolean> {
-  const hookList = hookNames.length > 0 ? ` (${hookNames.join(', ')})` : '';
-  const action = await prompts.select({
-    message: `Git hooks already configured in .vite-hooks/${hookList}`,
-    options: [
-      {
-        label: 'Keep',
-        value: 'keep',
-        hint: 'Leave existing hooks unchanged',
-      },
-      {
-        label: 'Skip',
-        value: 'skip',
-        hint: "Don't touch git hooks setup",
-      },
-    ],
-    initialValue: 'keep',
-  });
-  if (prompts.isCancel(action)) {
-    cancelAndExit();
-    return false;
-  }
-  return action === 'keep';
-}
-
 export async function promptGitHooks(options: {
   hooks?: boolean;
   interactive: boolean;

@@ -14,7 +14,7 @@ import {
   isJsonLikeFile,
   selectEditor,
 } from '../utils/editor.ts';
-import { cancelAndExit, promptExistingGitHooks, promptGitHooks } from '../utils/prompts.ts';
+import { cancelAndExit, promptGitHooks } from '../utils/prompts.ts';
 import {
   confirmEslintMigration,
   confirmTsupMigration,
@@ -22,7 +22,7 @@ import {
   detectIncompatibleEslintIntegration,
   detectTsupProject,
   hasExistingViteHooksPolicy,
-  listExistingViteHookNames,
+  isViteHooksSetupComplete,
   preflightGitHooksSetup,
   warnIncompatibleEslintIntegration,
   warnLegacyEslintConfig,
@@ -47,10 +47,20 @@ async function collectGitHooksDecision(
   options: MigrationOptions,
   packages: readonly WorkspacePackage[] = [],
 ): Promise<boolean> {
-  let shouldSetupHooks =
-    options.hooks === undefined && options.interactive && hasExistingViteHooksPolicy(rootDir)
-      ? await promptExistingGitHooks(listExistingViteHookNames(rootDir))
-      : await promptGitHooks(options);
+  let shouldSetupHooks: boolean;
+  if (options.hooks === undefined && hasExistingViteHooksPolicy(rootDir)) {
+    // Project-owned hooks in .vite-hooks/ already express the intent to use
+    // Vite+ hooks, so don't ask again.
+    if (isViteHooksSetupComplete(rootDir)) {
+      prompts.log.info('Git hooks already configured, skipping');
+      return false;
+    }
+    // Hook files exist but setup is incomplete: finish it through the usual
+    // checks. setupGitHooks keeps existing hook files unchanged.
+    shouldSetupHooks = true;
+  } else {
+    shouldSetupHooks = await promptGitHooks(options);
+  }
   if (shouldSetupHooks) {
     const reason = preflightGitHooksSetup(rootDir, packageManager, packages);
     if (reason) {
