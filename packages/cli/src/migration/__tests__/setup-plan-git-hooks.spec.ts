@@ -18,14 +18,21 @@ vi.mock('@voidzero-dev/vite-plus-prompts', async (importOriginal) => {
   };
 });
 
+vi.mock('../../utils/terminal.ts', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../utils/terminal.ts')>();
+  return { ...mod, log: vi.fn() };
+});
+
+const terminal = await import('../../utils/terminal.ts');
 const { collectMigrationSetupPlan } = await import('../setup-plan.js');
 const { installGitHooks, isViteHooksSetupComplete } = await import('../migrator.js');
 
 const mockSelect = vi.mocked(prompts.select);
 const mockConfirm = vi.mocked(prompts.confirm);
-const mockInfo = vi.mocked(prompts.log.info);
+const mockLog = vi.mocked(terminal.log);
 
 const SKIP_MESSAGE = 'Git hooks already configured, skipping';
+const skipMessage = expect.stringContaining(SKIP_MESSAGE);
 
 function git(cwd: string, ...args: string[]) {
   const result = spawnSync('git', args, { cwd, stdio: 'pipe' });
@@ -46,12 +53,12 @@ function readPackageJson(dir: string): { scripts?: Record<string, string> } {
 function installDispatcher(dir: string, hookNames: string[]) {
   const dispatcherDir = path.join(dir, '.vite-hooks', '_');
   fs.mkdirSync(dispatcherDir, { recursive: true });
-  fs.writeFileSync(path.join(dispatcherDir, 'h'), '#!/usr/bin/env sh\n');
+  fs.writeFileSync(path.join(dispatcherDir, 'h'), '#!/usr/bin/env sh\n', { mode: 0o755 });
+  fs.chmodSync(path.join(dispatcherDir, 'h'), 0o755);
   for (const hookName of hookNames) {
-    fs.writeFileSync(
-      path.join(dispatcherDir, hookName),
-      '#!/usr/bin/env sh\n. "$(dirname "$0")/h"',
-    );
+    const stubPath = path.join(dispatcherDir, hookName);
+    fs.writeFileSync(stubPath, '#!/usr/bin/env sh\n. "$(dirname "$0")/h"', { mode: 0o755 });
+    fs.chmodSync(stubPath, 0o755);
   }
   git(dir, 'config', 'core.hooksPath', '.vite-hooks/_');
 }
@@ -111,16 +118,26 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
 
         expect(plan.shouldSetupHooks).toBe(false);
         expectNoHooksPrompt();
-        expect(mockInfo).toHaveBeenCalledWith(SKIP_MESSAGE);
+        expect(mockLog).toHaveBeenCalledWith(skipMessage);
       },
     );
+
+    it('accepts a postinstall script that runs vp config', async () => {
+      writePackageJson(tmpDir, { scripts: { postinstall: 'vp config' } });
+
+      expect(isViteHooksSetupComplete(tmpDir)).toBe(true);
+      const plan = await collect({ interactive: true });
+      expect(plan.shouldSetupHooks).toBe(false);
+      expectNoHooksPrompt();
+      expect(mockLog).toHaveBeenCalledWith(skipMessage);
+    });
 
     it('still honors --no-hooks', async () => {
       const plan = await collect({ interactive: true, hooks: false });
 
       expect(plan.shouldSetupHooks).toBe(false);
       expectNoHooksPrompt();
-      expect(mockInfo).not.toHaveBeenCalledWith(SKIP_MESSAGE);
+      expect(mockLog).not.toHaveBeenCalledWith(skipMessage);
     });
 
     it('still runs setup when --hooks is passed', async () => {
@@ -128,7 +145,7 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
 
       expect(plan.shouldSetupHooks).toBe(true);
       expectNoHooksPrompt();
-      expect(mockInfo).not.toHaveBeenCalledWith(SKIP_MESSAGE);
+      expect(mockLog).not.toHaveBeenCalledWith(skipMessage);
     });
   });
 
@@ -165,13 +182,31 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
         },
       ],
       [
+        'the dispatcher is not executable',
+        () => {
+          setUpFullyConfiguredHooks();
+          fs.chmodSync(path.join(tmpDir, '.vite-hooks', '_', 'h'), 0o644);
+        },
+      ],
+      [
+        'a dispatcher stub is not executable',
+        () => {
+          setUpFullyConfiguredHooks();
+          fs.chmodSync(path.join(tmpDir, '.vite-hooks', '_', 'pre-commit'), 0o644);
+        },
+      ],
+      [
         'no git repository',
         () => {
           writePackageJson(tmpDir, { scripts: { prepare: 'vp config' } });
           writeProjectHooks();
         },
       ],
-    ])('completes setup without prompting when %s', async (_case, setUp) => {
+    ])('completes setup without prompting when %s', async (testCase, setUp) => {
+      if (process.platform === 'win32' && testCase.includes('not executable')) {
+        // Windows has no POSIX execute bits, so these cases do not apply.
+        return;
+      }
       setUp();
       expect(isViteHooksSetupComplete(tmpDir)).toBe(false);
 
@@ -180,7 +215,7 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
         expect(plan.shouldSetupHooks).toBe(true);
       }
       expectNoHooksPrompt();
-      expect(mockInfo).not.toHaveBeenCalledWith(SKIP_MESSAGE);
+      expect(mockLog).not.toHaveBeenCalledWith(skipMessage);
     });
 
     it('does not treat hook files alone as fully configured', () => {
@@ -204,6 +239,29 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
       );
       expect(readPackageJson(tmpDir).scripts?.prepare).toBe('vp config');
       expect(fs.existsSync(path.join(tmpDir, 'vite.config.ts'))).toBe(false);
+    });
+
+    it('does not add a redundant prepare script when postinstall runs vp config', async () => {
+      writePackageJson(tmpDir, { scripts: { postinstall: 'vp config', prepare: 'tsc -b' } });
+      writeProjectHooks();
+
+      const plan = await collect({ interactive: true });
+      expect(plan.shouldSetupHooks).toBe(true);
+      expect(installGitHooks(tmpDir, true)).toBe(true);
+
+      expect(readPackageJson(tmpDir).scripts).toEqual({
+        postinstall: 'vp config',
+        prepare: 'tsc -b',
+      });
+    });
+
+    it('prepends vp config to an existing prepare script', () => {
+      writePackageJson(tmpDir, { scripts: { prepare: 'tsc -b' } });
+      writeProjectHooks();
+
+      expect(installGitHooks(tmpDir, true)).toBe(true);
+
+      expect(readPackageJson(tmpDir).scripts?.prepare).toBe('vp config && tsc -b');
     });
 
     it('still runs the existing preflight checks', async () => {

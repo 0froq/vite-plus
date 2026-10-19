@@ -15,6 +15,7 @@ import {
   selectEditor,
 } from '../utils/editor.ts';
 import { cancelAndExit, promptGitHooks } from '../utils/prompts.ts';
+import { log, muted } from '../utils/terminal.ts';
 import {
   confirmEslintMigration,
   confirmTsupMigration,
@@ -52,7 +53,7 @@ async function collectGitHooksDecision(
     // Project-owned hooks in .vite-hooks/ already express the intent to use
     // Vite+ hooks, so don't ask again.
     if (isViteHooksSetupComplete(rootDir)) {
-      prompts.log.info('Git hooks already configured, skipping');
+      log(`${muted('•')} Git hooks already configured, skipping`);
       return false;
     }
     // Hook files exist but setup is incomplete: finish it through the usual

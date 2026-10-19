@@ -101,9 +101,11 @@ export function listExistingViteHookNames(projectPath: string): string[] {
  * the hooks step again would have nothing left to do. Hook files in
  * `.vite-hooks/` alone are not enough; full setup also requires:
  *
- * - a `prepare` script that runs `vp config` (refreshes the dispatcher), and
+ * - a `prepare` or `postinstall` script that runs `vp config` (refreshes the
+ *   dispatcher), and
  * - at the git repository root, `core.hooksPath` pointing at `.vite-hooks/_`
- *   with the generated dispatcher (`_/h`) and a stub for every project hook.
+ *   with the generated dispatcher (`_/h`) and a stub for every project hook,
+ *   all executable on POSIX (git ignores non-executable hooks).
  */
 export function isViteHooksSetupComplete(projectPath: string): boolean {
   if (!hasExistingViteHooksPolicy(projectPath)) {
@@ -114,7 +116,7 @@ export function isViteHooksSetupComplete(projectPath: string): boolean {
     return false;
   }
   const pkg = readJsonFile(packageJsonPath) as { scripts?: Record<string, string> };
-  if (!pkg.scripts?.prepare?.includes('vp config')) {
+  if (!hasVpConfigLifecycleScript(pkg.scripts)) {
     return false;
   }
   const gitRoot = findGitRoot(projectPath);
@@ -125,9 +127,25 @@ export function isViteHooksSetupComplete(projectPath: string): boolean {
     return false;
   }
   const dispatcherDir = path.join(projectPath, '.vite-hooks', '_');
-  return ['h', ...listExistingViteHookNames(projectPath)].every(
-    (name) =>
-      fs.lstatSync(path.join(dispatcherDir, name), { throwIfNoEntry: false })?.isFile() ?? false,
+  return ['h', ...listExistingViteHookNames(projectPath)].every((name) => {
+    const stats = fs.lstatSync(path.join(dispatcherDir, name), { throwIfNoEntry: false });
+    if (!stats?.isFile()) {
+      return false;
+    }
+    // `vp config` chmods the dispatcher files to 0755; git ignores hooks that
+    // are not executable. Windows has no POSIX execute bits to check.
+    return process.platform === 'win32' || (stats.mode & 0o111) !== 0;
+  });
+}
+
+/**
+ * Whether a lifecycle script that `vp config` supports (`prepare` or
+ * `postinstall`) already runs it to refresh the hook dispatcher.
+ */
+function hasVpConfigLifecycleScript(scripts: Record<string, string> | undefined): boolean {
+  return (
+    (scripts?.prepare?.includes('vp config') ?? false) ||
+    (scripts?.postinstall?.includes('vp config') ?? false)
   );
 }
 
@@ -327,10 +345,11 @@ export function setupGitHooks(
     if (!pkg.scripts) {
       pkg.scripts = {};
     }
-    if (!pkg.scripts.prepare) {
-      pkg.scripts.prepare = 'vp config';
-    } else if (!pkg.scripts.prepare.includes('vp config')) {
-      pkg.scripts.prepare = `vp config && ${pkg.scripts.prepare}`;
+    // Leave scripts alone when `prepare` or `postinstall` already runs it.
+    if (!hasVpConfigLifecycleScript(pkg.scripts)) {
+      pkg.scripts.prepare = pkg.scripts.prepare
+        ? `vp config && ${pkg.scripts.prepare}`
+        : 'vp config';
     }
 
     return pkg;
