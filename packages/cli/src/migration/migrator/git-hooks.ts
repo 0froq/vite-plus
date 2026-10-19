@@ -173,15 +173,39 @@ function runsVpConfigHooks(script: string | undefined): boolean {
   if (!script) {
     return false;
   }
-  return script.split(/&&|\|\||;|\|/).some((command) => {
+  return script.split(SCRIPT_COMMAND_SEPARATOR).some((command) => {
     const tokens = command.trim().split(/\s+/);
-    const start = tokens.findIndex((token, i) => token === 'vp' && tokens[i + 1] === 'config');
+    const start = findVpConfigToken(tokens);
     if (start === -1) {
       return false;
     }
     const hookFlags = tokens.slice(start + 2).filter((t) => t === '--hooks' || t === '--no-hooks');
     return hookFlags.at(-1) !== '--no-hooks';
   });
+}
+
+const SCRIPT_COMMAND_SEPARATOR = /(&&|\|\||;|\|)/;
+
+function findVpConfigToken(tokens: string[]): number {
+  return tokens.findIndex((token, i) => token === 'vp' && tokens[i + 1] === 'config');
+}
+
+/**
+ * Drop `--no-hooks` from every `vp config` invocation in a script, keeping
+ * other commands and flags intact. Returns null when the script has no
+ * `vp config` invocation to rewrite.
+ */
+function enableVpConfigHooks(script: string): string | null {
+  let rewritten = false;
+  const parts = script.split(SCRIPT_COMMAND_SEPARATOR).map((part, index) => {
+    // Odd indexes are the captured separators.
+    if (index % 2 === 1 || findVpConfigToken(part.trim().split(/\s+/)) === -1) {
+      return part;
+    }
+    rewritten = true;
+    return part.replace(/\s+--no-hooks(?=\s|$)/g, '');
+  });
+  return rewritten ? parts.join('') : null;
 }
 
 function findNonRegularViteHookPath(projectPath: string): string | null {
@@ -382,9 +406,12 @@ export function setupGitHooks(
     }
     // Leave scripts alone when `prepare` or `postinstall` already runs it.
     if (!hasVpConfigLifecycleScript(pkg.scripts)) {
-      pkg.scripts.prepare = pkg.scripts.prepare
-        ? `vp config && ${pkg.scripts.prepare}`
-        : 'vp config';
+      // Re-enable an existing `vp config --no-hooks` in prepare rather than
+      // adding a second `vp config` invocation.
+      const enabledPrepare = pkg.scripts.prepare && enableVpConfigHooks(pkg.scripts.prepare);
+      pkg.scripts.prepare =
+        enabledPrepare ||
+        (pkg.scripts.prepare ? `vp config && ${pkg.scripts.prepare}` : 'vp config');
     }
 
     return pkg;

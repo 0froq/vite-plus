@@ -307,6 +307,25 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
       });
     });
 
+    it.each([
+      ['vp config --no-hooks', 'vp config'],
+      ['tsc -b && vp config --no-hooks', 'tsc -b && vp config'],
+      [
+        'vp config --no-hooks --hooks-dir .vite-hooks --no-agent && tsc -b',
+        'vp config --hooks-dir .vite-hooks --no-agent && tsc -b',
+      ],
+    ])('rewrites prepare %j in place to re-enable hooks', (prepare, expected) => {
+      writePackageJson(tmpDir, { scripts: { prepare, postinstall: 'node setup.js' } });
+      writeProjectHooks();
+
+      expect(installGitHooks(tmpDir, true)).toBe(true);
+
+      expect(readPackageJson(tmpDir).scripts).toEqual({
+        prepare: expected,
+        postinstall: 'node setup.js',
+      });
+    });
+
     it('prepends vp config to an existing prepare script', () => {
       writePackageJson(tmpDir, { scripts: { prepare: 'tsc -b' } });
       writeProjectHooks();
