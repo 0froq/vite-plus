@@ -5,7 +5,12 @@ import * as prompts from '@voidzero-dev/vite-plus-prompts';
 import spawn from 'cross-spawn';
 
 import { rewriteScripts } from '../../../binding/index.js';
-import { findUnsafeHookInstallPath, SUPPORTED_GIT_HOOK_NAMES } from '../../config/hooks.ts';
+import {
+  findUnsafeHookInstallPath,
+  HOOK_STUB_SCRIPT,
+  hookScript,
+  SUPPORTED_GIT_HOOK_NAMES,
+} from '../../config/hooks.ts';
 import type { PackageManager, WorkspacePackage } from '../../types/index.ts';
 import { documentationUrl } from '../../utils/documentation.ts';
 import { findGitRoot } from '../../utils/git.ts';
@@ -105,7 +110,8 @@ export function listExistingViteHookNames(projectPath: string): string[] {
  *   dispatcher), and
  * - at the git repository root, `core.hooksPath` pointing at `.vite-hooks/_`
  *   with the generated dispatcher (`_/h`) and a stub for every project hook,
- *   all executable on POSIX (git ignores non-executable hooks).
+ *   matching what `vp config` writes and executable on POSIX (git ignores
+ *   non-executable hooks).
  */
 export function isViteHooksSetupComplete(projectPath: string): boolean {
   if (!hasExistingViteHooksPolicy(projectPath)) {
@@ -127,14 +133,26 @@ export function isViteHooksSetupComplete(projectPath: string): boolean {
     return false;
   }
   const dispatcherDir = path.join(projectPath, '.vite-hooks', '_');
-  return ['h', ...listExistingViteHookNames(projectPath)].every((name) => {
-    const stats = fs.lstatSync(path.join(dispatcherDir, name), { throwIfNoEntry: false });
+  const expectedFiles: [string, string][] = [
+    ['h', hookScript('.vite-hooks')],
+    ...listExistingViteHookNames(projectPath).map((name): [string, string] => [
+      name,
+      HOOK_STUB_SCRIPT,
+    ]),
+  ];
+  return expectedFiles.every(([name, expectedContent]) => {
+    const filePath = path.join(dispatcherDir, name);
+    const stats = fs.lstatSync(filePath, { throwIfNoEntry: false });
     if (!stats?.isFile()) {
       return false;
     }
     // `vp config` chmods the dispatcher files to 0755; git ignores hooks that
     // are not executable. Windows has no POSIX execute bits to check.
-    return process.platform === 'win32' || (stats.mode & 0o111) !== 0;
+    if (process.platform !== 'win32' && (stats.mode & 0o111) === 0) {
+      return false;
+    }
+    // Stale or modified dispatcher files are refreshed by running setup again.
+    return fs.readFileSync(filePath, 'utf8') === expectedContent;
   });
 }
 
@@ -143,10 +161,27 @@ export function isViteHooksSetupComplete(projectPath: string): boolean {
  * `postinstall`) already runs it to refresh the hook dispatcher.
  */
 function hasVpConfigLifecycleScript(scripts: Record<string, string> | undefined): boolean {
-  return (
-    (scripts?.prepare?.includes('vp config') ?? false) ||
-    (scripts?.postinstall?.includes('vp config') ?? false)
-  );
+  return runsVpConfigHooks(scripts?.prepare) || runsVpConfigHooks(scripts?.postinstall);
+}
+
+/**
+ * Whether a script runs `vp config` with hooks enabled. `--no-hooks` skips the
+ * dispatcher install, so it does not count; the last of `--hooks` /
+ * `--no-hooks` wins, as in the `vp config` argument parser.
+ */
+function runsVpConfigHooks(script: string | undefined): boolean {
+  if (!script) {
+    return false;
+  }
+  return script.split(/&&|\|\||;|\|/).some((command) => {
+    const tokens = command.trim().split(/\s+/);
+    const start = tokens.findIndex((token, i) => token === 'vp' && tokens[i + 1] === 'config');
+    if (start === -1) {
+      return false;
+    }
+    const hookFlags = tokens.slice(start + 2).filter((t) => t === '--hooks' || t === '--no-hooks');
+    return hookFlags.at(-1) !== '--no-hooks';
+  });
 }
 
 function findNonRegularViteHookPath(projectPath: string): string | null {

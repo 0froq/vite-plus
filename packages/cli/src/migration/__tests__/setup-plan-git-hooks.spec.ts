@@ -6,6 +6,7 @@ import path from 'node:path';
 import * as prompts from '@voidzero-dev/vite-plus-prompts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { HOOK_STUB_SCRIPT, hookScript } from '../../config/hooks.ts';
 import { PackageManager } from '../../types/index.js';
 
 vi.mock('@voidzero-dev/vite-plus-prompts', async (importOriginal) => {
@@ -53,11 +54,11 @@ function readPackageJson(dir: string): { scripts?: Record<string, string> } {
 function installDispatcher(dir: string, hookNames: string[]) {
   const dispatcherDir = path.join(dir, '.vite-hooks', '_');
   fs.mkdirSync(dispatcherDir, { recursive: true });
-  fs.writeFileSync(path.join(dispatcherDir, 'h'), '#!/usr/bin/env sh\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(dispatcherDir, 'h'), hookScript('.vite-hooks'), { mode: 0o755 });
   fs.chmodSync(path.join(dispatcherDir, 'h'), 0o755);
   for (const hookName of hookNames) {
     const stubPath = path.join(dispatcherDir, hookName);
-    fs.writeFileSync(stubPath, '#!/usr/bin/env sh\n. "$(dirname "$0")/h"', { mode: 0o755 });
+    fs.writeFileSync(stubPath, HOOK_STUB_SCRIPT, { mode: 0o755 });
     fs.chmodSync(stubPath, 0o755);
   }
   git(dir, 'config', 'core.hooksPath', '.vite-hooks/_');
@@ -132,6 +133,15 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
       expect(mockLog).toHaveBeenCalledWith(skipMessage);
     });
 
+    it.each(['tsc -b && vp config', 'vp config --no-hooks --hooks', 'pnpm exec vp config'])(
+      'accepts a lifecycle script running %s',
+      (prepare) => {
+        writePackageJson(tmpDir, { scripts: { prepare } });
+
+        expect(isViteHooksSetupComplete(tmpDir)).toBe(true);
+      },
+    );
+
     it('still honors --no-hooks', async () => {
       const plan = await collect({ interactive: true, hooks: false });
 
@@ -196,6 +206,36 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
         },
       ],
       [
+        'the dispatcher content is stale',
+        () => {
+          setUpFullyConfiguredHooks();
+          fs.writeFileSync(path.join(tmpDir, '.vite-hooks', '_', 'h'), '#!/usr/bin/env sh\n');
+        },
+      ],
+      [
+        'a dispatcher stub content is stale',
+        () => {
+          setUpFullyConfiguredHooks();
+          fs.writeFileSync(path.join(tmpDir, '.vite-hooks', '_', 'commit-msg'), 'exit 0\n');
+        },
+      ],
+      [
+        'prepare runs vp config --no-hooks',
+        () => {
+          setUpFullyConfiguredHooks();
+          writePackageJson(tmpDir, { scripts: { prepare: 'vp config --no-hooks' } });
+        },
+      ],
+      [
+        'postinstall runs vp config --hooks --no-hooks',
+        () => {
+          setUpFullyConfiguredHooks();
+          writePackageJson(tmpDir, {
+            scripts: { postinstall: 'tsc -b && vp config --hooks --no-hooks' },
+          });
+        },
+      ],
+      [
         'no git repository',
         () => {
           writePackageJson(tmpDir, { scripts: { prepare: 'vp config' } });
@@ -252,6 +292,18 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
       expect(readPackageJson(tmpDir).scripts).toEqual({
         postinstall: 'vp config',
         prepare: 'tsc -b',
+      });
+    });
+
+    it('adds a refreshing prepare script when postinstall runs vp config --no-hooks', () => {
+      writePackageJson(tmpDir, { scripts: { postinstall: 'vp config --no-hooks' } });
+      writeProjectHooks();
+
+      expect(installGitHooks(tmpDir, true)).toBe(true);
+
+      expect(readPackageJson(tmpDir).scripts).toEqual({
+        postinstall: 'vp config --no-hooks',
+        prepare: 'vp config',
       });
     });
 
