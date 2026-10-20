@@ -133,14 +133,34 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
       expect(mockLog).toHaveBeenCalledWith(skipMessage);
     });
 
-    it.each(['tsc -b && vp config', 'vp config --no-hooks --hooks', 'pnpm exec vp config'])(
-      'accepts a lifecycle script running %s',
-      (prepare) => {
-        writePackageJson(tmpDir, { scripts: { prepare } });
+    it.each([
+      'tsc -b && vp config',
+      'vp config --no-hooks --hooks',
+      'pnpm exec vp config',
+      'vp "config" --hooks-dir="./.vite-hooks"',
+      'echo "build; done" && vp config',
+    ])('accepts a lifecycle script running %s', (prepare) => {
+      writePackageJson(tmpDir, { scripts: { prepare } });
 
-        expect(isViteHooksSetupComplete(tmpDir)).toBe(true);
-      },
-    );
+      expect(isViteHooksSetupComplete(tmpDir)).toBe(true);
+    });
+
+    it.each([
+      'echo vp config',
+      'node setup.js vp config',
+      'echo "build && vp config && done"',
+      'vp config "--no-hooks"',
+      'vp config --help',
+      'vp config --hooks-dir .custom-hooks',
+      'VP_GIT_HOOKS=0 vp config',
+      'cd packages/app && vp config',
+    ])('does not count %j as a hook refresh', async (prepare) => {
+      writePackageJson(tmpDir, { scripts: { prepare } });
+
+      expect(isViteHooksSetupComplete(tmpDir)).toBe(false);
+      expect((await collect({ interactive: true })).shouldSetupHooks).toBe(true);
+      expectNoHooksPrompt();
+    });
 
     it('still honors --no-hooks', async () => {
       const plan = await collect({ interactive: true, hooks: false });
@@ -311,6 +331,10 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
       ['vp config --no-hooks', 'vp config'],
       ['tsc -b && vp config --no-hooks', 'tsc -b && vp config'],
       [
+        'echo "build && --no-hooks" && vp "config" "--no-hooks" && echo --no-hooks',
+        'echo "build && --no-hooks" && vp "config" && echo --no-hooks',
+      ],
+      [
         'vp config --no-hooks --hooks-dir .vite-hooks --no-agent && tsc -b',
         'vp config --hooks-dir .vite-hooks --no-agent && tsc -b',
       ],
@@ -347,6 +371,40 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
       expect(prompts.log.warn).toHaveBeenCalledWith(
         expect.stringContaining('core.hooksPath is already set to ".githooks"'),
       );
+    });
+
+    it('runs preflight when the dispatcher directory is a regular file', async () => {
+      setUpFullyConfiguredHooks();
+      const dispatcherDir = path.join(tmpDir, '.vite-hooks', '_');
+      fs.rmSync(dispatcherDir, { recursive: true });
+      fs.writeFileSync(dispatcherDir, 'preserve this file');
+
+      expect(isViteHooksSetupComplete(tmpDir)).toBe(false);
+      const plan = await collect({ interactive: true });
+
+      expect(plan.shouldSetupHooks).toBe(false);
+      expectNoHooksPrompt();
+      expect(prompts.log.warn).toHaveBeenCalledWith(
+        expect.stringContaining('Git hook dispatcher path ".vite-hooks/_" is unsafe'),
+      );
+      expect(fs.readFileSync(dispatcherDir, 'utf8')).toBe('preserve this file');
+    });
+
+    it.each([
+      'echo vp config --no-hooks',
+      'node setup.js vp config --no-hooks',
+      'echo "build && vp config --no-hooks && done"',
+      'cd tools && vp config',
+      'VP_GIT_HOOKS=0 vp config',
+      'echo "$BUILD_STATUS"',
+    ])('preserves arguments in %j when adding a refresh command', (prepare) => {
+      writePackageJson(tmpDir, { scripts: { prepare } });
+      writeProjectHooks();
+
+      expect(installGitHooks(tmpDir, true)).toBe(true);
+      expect(readPackageJson(tmpDir).scripts?.prepare).toBe(`vp config && ${prepare}`);
+      expect(installGitHooks(tmpDir, true)).toBe(true);
+      expect(readPackageJson(tmpDir).scripts?.prepare).toBe(`vp config && ${prepare}`);
     });
 
     it.each([true, false])('respects --hooks=%s', async (hooks) => {

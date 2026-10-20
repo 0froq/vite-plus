@@ -4,7 +4,7 @@ import path from 'node:path';
 import * as prompts from '@voidzero-dev/vite-plus-prompts';
 import spawn from 'cross-spawn';
 
-import { rewriteScripts } from '../../../binding/index.js';
+import { parseConfigArgs, rewriteScripts } from '../../../binding/index.js';
 import {
   findUnsafeHookInstallPath,
   HOOK_STUB_SCRIPT,
@@ -15,6 +15,7 @@ import type { PackageManager, WorkspacePackage } from '../../types/index.ts';
 import { documentationUrl } from '../../utils/documentation.ts';
 import { findGitRoot } from '../../utils/git.ts';
 import { editJsonFile, isJsonFile, readJsonFile } from '../../utils/json.ts';
+import { type CommandToken, literalArgv, literalCommands } from '../../utils/shell-command.ts';
 import {
   hasStagedConfigInViteConfig,
   mergeStagedConfigToViteConfig,
@@ -132,6 +133,9 @@ export function isViteHooksSetupComplete(projectPath: string): boolean {
   if (normalizeGitHooksPath(getConfiguredHooksPath(projectPath)) !== '.vite-hooks/_') {
     return false;
   }
+  if (findUnsafeHookInstallPath(projectPath, '.vite-hooks')) {
+    return false;
+  }
   const dispatcherDir = path.join(projectPath, '.vite-hooks', '_');
   const expectedFiles: [string, string][] = [
     ['h', hookScript('.vite-hooks')],
@@ -170,24 +174,66 @@ function hasVpConfigLifecycleScript(scripts: Record<string, string> | undefined)
  * `--no-hooks` wins, as in the `vp config` argument parser.
  */
 function runsVpConfigHooks(script: string | undefined): boolean {
-  if (!script) {
-    return false;
-  }
-  return script.split(SCRIPT_COMMAND_SEPARATOR).some((command) => {
-    const tokens = command.trim().split(/\s+/);
-    const start = findVpConfigToken(tokens);
-    if (start === -1) {
-      return false;
-    }
-    const hookFlags = tokens.slice(start + 2).filter((t) => t === '--hooks' || t === '--no-hooks');
-    return hookFlags.at(-1) !== '--no-hooks';
-  });
+  return vpConfigHookCommands(script).some(
+    (args) =>
+      args.findLast(({ value }) => value === '--hooks' || value === '--no-hooks')?.value !==
+      '--no-hooks',
+  );
 }
 
-const SCRIPT_COMMAND_SEPARATOR = /(&&|\|\||;|\|)/;
-
-function findVpConfigToken(tokens: string[]): number {
-  return tokens.findIndex((token, i) => token === 'vp' && tokens[i + 1] === 'config');
+/** Only recognize literal invocations in the project directory. Text passed
+ * to echo, node, or another command must not count as a dispatcher refresh. */
+function vpConfigHookCommands(script: string | undefined): CommandToken[][] {
+  let commands = script ? literalCommands(script) : undefined;
+  // Preserve a leading refresh even when later commands need shell evaluation.
+  // setupGitHooks prepends this form when it cannot rewrite an existing script.
+  if (!commands && script?.includes('&&')) {
+    const first = literalArgv(script.slice(0, script.indexOf('&&')));
+    commands = first?.length ? [first] : undefined;
+  }
+  if (!commands) {
+    return [];
+  }
+  const result: CommandToken[][] = [];
+  for (const tokens of commands) {
+    const values = tokens.map(({ value }) => value);
+    let start = 0;
+    if (/^[A-Za-z_]\w*=/.test(values[0] ?? '')) {
+      // Environment overrides can disable hooks or redirect Git operations.
+      return result;
+    }
+    if (
+      ['cd', 'pushd', 'popd', '.', 'source', 'eval', 'export', 'set', 'unset'].includes(values[0])
+    ) {
+      return result;
+    }
+    if (['pnpm', 'npm', 'yarn', 'bun', 'npx', 'bunx'].includes(values[0])) {
+      start++;
+      if (values[start] === 'exec' || values[start] === 'x') {
+        start++;
+      }
+      if (values[start] === '--') {
+        start++;
+      }
+    }
+    if (values[start] !== 'vp' || values[start + 1] !== 'config') {
+      continue;
+    }
+    const args = tokens.slice(start + 2);
+    // The native parser prints help; do not invoke it for help-only scripts.
+    if (args.some(({ value }) => value === '--help' || value === '-h')) {
+      continue;
+    }
+    const parsed = parseConfigArgs(args.map(({ value }) => value));
+    if (
+      parsed.status === 'ok' &&
+      (parsed.value.hooksDir === undefined ||
+        normalizeGitHooksPath(parsed.value.hooksDir) === '.vite-hooks')
+    ) {
+      result.push(args);
+    }
+  }
+  return result;
 }
 
 /**
@@ -196,16 +242,16 @@ function findVpConfigToken(tokens: string[]): number {
  * `vp config` invocation to rewrite.
  */
 function enableVpConfigHooks(script: string): string | null {
-  let rewritten = false;
-  const parts = script.split(SCRIPT_COMMAND_SEPARATOR).map((part, index) => {
-    // Odd indexes are the captured separators.
-    if (index % 2 === 1 || findVpConfigToken(part.trim().split(/\s+/)) === -1) {
-      return part;
-    }
-    rewritten = true;
-    return part.replace(/\s+--no-hooks(?=\s|$)/g, '');
-  });
-  return rewritten ? parts.join('') : null;
+  const flags = vpConfigHookCommands(script)
+    .flat()
+    .filter(({ value }) => value === '--no-hooks');
+  if (!flags.length) {
+    return null;
+  }
+  for (const flag of flags.toReversed()) {
+    script = script.slice(0, flag.start).trimEnd() + script.slice(flag.end);
+  }
+  return script;
 }
 
 function findNonRegularViteHookPath(projectPath: string): string | null {
