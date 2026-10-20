@@ -380,7 +380,9 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
       expect(plan.shouldSetupHooks).toBe(false);
       expectNoHooksPrompt();
       expect(prompts.log.warn).toHaveBeenCalledWith(
-        expect.stringContaining('Git hook dispatcher path ".vite-hooks/_" is unsafe'),
+        expect.stringContaining(
+          `Git hook dispatcher path "${path.join('.vite-hooks', '_')}" is unsafe`,
+        ),
       );
       expect(fs.readFileSync(dispatcherDir, 'utf8')).toBe('preserve this file');
     });
