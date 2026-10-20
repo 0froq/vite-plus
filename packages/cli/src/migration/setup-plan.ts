@@ -48,28 +48,22 @@ async function collectGitHooksDecision(
   options: MigrationOptions,
   packages: readonly WorkspacePackage[] = [],
 ): Promise<boolean> {
-  let shouldSetupHooks: boolean;
-  if (options.hooks === undefined && hasExistingViteHooksPolicy(rootDir)) {
-    // Project-owned hooks in .vite-hooks/ already express the intent to use
-    // Vite+ hooks, so don't ask again.
-    if (isViteHooksSetupComplete(rootDir)) {
-      log(`${muted('•')} Git hooks already configured, skipping`);
-      return false;
-    }
-    // Hook files exist but setup is incomplete: finish it through the usual
-    // checks. setupGitHooks keeps existing hook files unchanged.
-    shouldSetupHooks = true;
-  } else {
-    shouldSetupHooks = await promptGitHooks(options);
+  const hasExistingHooks = options.hooks === undefined && hasExistingViteHooksPolicy(rootDir);
+  if (hasExistingHooks && isViteHooksSetupComplete(rootDir)) {
+    log(`${muted('•')} Git hooks already configured, skipping`);
+    return false;
   }
-  if (shouldSetupHooks) {
-    const reason = preflightGitHooksSetup(rootDir, packageManager, packages);
-    if (reason) {
-      prompts.log.warn(`⚠ ${reason}`);
-      shouldSetupHooks = false;
-    }
+
+  // Existing hook files opt into setup; preflight still protects their policy.
+  if (!hasExistingHooks && !(await promptGitHooks(options))) {
+    return false;
   }
-  return shouldSetupHooks;
+  const reason = preflightGitHooksSetup(rootDir, packageManager, packages);
+  if (reason) {
+    prompts.log.warn(`⚠ ${reason}`);
+    return false;
+  }
+  return true;
 }
 
 async function collectAgentInstructionPlan(

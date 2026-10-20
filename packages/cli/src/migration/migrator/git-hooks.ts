@@ -15,7 +15,12 @@ import type { PackageManager, WorkspacePackage } from '../../types/index.ts';
 import { documentationUrl } from '../../utils/documentation.ts';
 import { findGitRoot } from '../../utils/git.ts';
 import { editJsonFile, isJsonFile, readJsonFile } from '../../utils/json.ts';
-import { type CommandToken, literalArgv, literalCommands } from '../../utils/shell-command.ts';
+import {
+  type CommandToken,
+  getCommandStartIndex,
+  literalArgv,
+  literalCommands,
+} from '../../utils/shell-command.ts';
 import {
   hasStagedConfigInViteConfig,
   mergeStagedConfigToViteConfig,
@@ -102,18 +107,8 @@ export function listExistingViteHookNames(projectPath: string): string[] {
   );
 }
 
-/**
- * Whether Vite+ hooks are already fully set up for this project, i.e. running
- * the hooks step again would have nothing left to do. Hook files in
- * `.vite-hooks/` alone are not enough; full setup also requires:
- *
- * - a `prepare` or `postinstall` script that runs `vp config` (refreshes the
- *   dispatcher), and
- * - at the git repository root, `core.hooksPath` pointing at `.vite-hooks/_`
- *   with the generated dispatcher (`_/h`) and a stub for every project hook,
- *   matching what `vp config` writes and executable on POSIX (git ignores
- *   non-executable hooks).
- */
+/** Full setup requires project hooks, a refresh lifecycle, and a current,
+ * executable dispatcher selected by core.hooksPath at the repository root. */
 export function isViteHooksSetupComplete(projectPath: string): boolean {
   if (!hasExistingViteHooksPolicy(projectPath)) {
     return false;
@@ -137,14 +132,7 @@ export function isViteHooksSetupComplete(projectPath: string): boolean {
     return false;
   }
   const dispatcherDir = path.join(projectPath, '.vite-hooks', '_');
-  const expectedFiles: [string, string][] = [
-    ['h', hookScript('.vite-hooks')],
-    ...listExistingViteHookNames(projectPath).map((name): [string, string] => [
-      name,
-      HOOK_STUB_SCRIPT,
-    ]),
-  ];
-  return expectedFiles.every(([name, expectedContent]) => {
+  for (const name of ['h', ...listExistingViteHookNames(projectPath)]) {
     const filePath = path.join(dispatcherDir, name);
     const stats = fs.lstatSync(filePath, { throwIfNoEntry: false });
     if (!stats?.isFile()) {
@@ -155,49 +143,45 @@ export function isViteHooksSetupComplete(projectPath: string): boolean {
     if (process.platform !== 'win32' && (stats.mode & 0o111) === 0) {
       return false;
     }
-    // Stale or modified dispatcher files are refreshed by running setup again.
-    return fs.readFileSync(filePath, 'utf8') === expectedContent;
-  });
+    const expectedContent = name === 'h' ? hookScript('.vite-hooks') : HOOK_STUB_SCRIPT;
+    if (fs.readFileSync(filePath, 'utf8') !== expectedContent) {
+      return false;
+    }
+  }
+  return true;
 }
 
-/**
- * Whether a lifecycle script that `vp config` supports (`prepare` or
- * `postinstall`) already runs it to refresh the hook dispatcher.
- */
 function hasVpConfigLifecycleScript(scripts: Record<string, string> | undefined): boolean {
-  return runsVpConfigHooks(scripts?.prepare) || runsVpConfigHooks(scripts?.postinstall);
+  return [scripts?.prepare, scripts?.postinstall].some((script) =>
+    vpConfigHookCommands(script).some((command) => command.hooksEnabled),
+  );
 }
 
-/**
- * Whether a script runs `vp config` with hooks enabled. `--no-hooks` skips the
- * dispatcher install, so it does not count; the last of `--hooks` /
- * `--no-hooks` wins, as in the `vp config` argument parser.
- */
-function runsVpConfigHooks(script: string | undefined): boolean {
-  return vpConfigHookCommands(script).some(
-    (args) =>
-      args.findLast(({ value }) => value === '--hooks' || value === '--no-hooks')?.value !==
-      '--no-hooks',
-  );
+interface VpConfigHookCommand {
+  args: CommandToken[];
+  hooksEnabled: boolean;
 }
 
 /** Only recognize literal invocations in the project directory. Text passed
  * to echo, node, or another command must not count as a dispatcher refresh. */
-function vpConfigHookCommands(script: string | undefined): CommandToken[][] {
-  let commands = script ? literalCommands(script) : undefined;
+function vpConfigHookCommands(script: string | undefined): VpConfigHookCommand[] {
+  if (!script) {
+    return [];
+  }
+  let commands = literalCommands(script);
   // Preserve a leading refresh even when later commands need shell evaluation.
   // setupGitHooks prepends this form when it cannot rewrite an existing script.
-  if (!commands && script?.includes('&&')) {
-    const first = literalArgv(script.slice(0, script.indexOf('&&')));
+  const separator = script.indexOf('&&');
+  if (!commands && separator !== -1) {
+    const first = literalArgv(script.slice(0, separator));
     commands = first?.length ? [first] : undefined;
   }
   if (!commands) {
     return [];
   }
-  const result: CommandToken[][] = [];
+  const result: VpConfigHookCommand[] = [];
   for (const tokens of commands) {
     const values = tokens.map(({ value }) => value);
-    let start = 0;
     if (/^[A-Za-z_]\w*=/.test(values[0] ?? '')) {
       // Environment overrides can disable hooks or redirect Git operations.
       return result;
@@ -207,15 +191,7 @@ function vpConfigHookCommands(script: string | undefined): CommandToken[][] {
     ) {
       return result;
     }
-    if (['pnpm', 'npm', 'yarn', 'bun', 'npx', 'bunx'].includes(values[0])) {
-      start++;
-      if (values[start] === 'exec' || values[start] === 'x') {
-        start++;
-      }
-      if (values[start] === '--') {
-        start++;
-      }
-    }
+    const start = getCommandStartIndex(values);
     if (values[start] !== 'vp' || values[start + 1] !== 'config') {
       continue;
     }
@@ -230,7 +206,7 @@ function vpConfigHookCommands(script: string | undefined): CommandToken[][] {
       (parsed.value.hooksDir === undefined ||
         normalizeGitHooksPath(parsed.value.hooksDir) === '.vite-hooks')
     ) {
-      result.push(args);
+      result.push({ args, hooksEnabled: parsed.value.hooks !== false });
     }
   }
   return result;
@@ -242,9 +218,9 @@ function vpConfigHookCommands(script: string | undefined): CommandToken[][] {
  * `vp config` invocation to rewrite.
  */
 function enableVpConfigHooks(script: string): string | null {
-  const flags = vpConfigHookCommands(script)
-    .flat()
-    .filter(({ value }) => value === '--no-hooks');
+  const flags = vpConfigHookCommands(script).flatMap(({ args }) =>
+    args.filter(({ value }) => value === '--no-hooks'),
+  );
   if (!flags.length) {
     return null;
   }
@@ -450,14 +426,13 @@ export function setupGitHooks(
     if (!pkg.scripts) {
       pkg.scripts = {};
     }
-    // Leave scripts alone when `prepare` or `postinstall` already runs it.
     if (!hasVpConfigLifecycleScript(pkg.scripts)) {
-      // Re-enable an existing `vp config --no-hooks` in prepare rather than
-      // adding a second `vp config` invocation.
-      const enabledPrepare = pkg.scripts.prepare && enableVpConfigHooks(pkg.scripts.prepare);
-      pkg.scripts.prepare =
-        enabledPrepare ||
-        (pkg.scripts.prepare ? `vp config && ${pkg.scripts.prepare}` : 'vp config');
+      const prepare = pkg.scripts.prepare;
+      if (prepare) {
+        pkg.scripts.prepare = enableVpConfigHooks(prepare) ?? `vp config && ${prepare}`;
+      } else {
+        pkg.scripts.prepare = 'vp config';
+      }
     }
 
     return pkg;

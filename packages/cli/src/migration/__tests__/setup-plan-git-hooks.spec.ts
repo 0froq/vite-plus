@@ -7,7 +7,10 @@ import * as prompts from '@voidzero-dev/vite-plus-prompts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HOOK_STUB_SCRIPT, hookScript } from '../../config/hooks.ts';
-import { PackageManager } from '../../types/index.js';
+import { PackageManager } from '../../types/index.ts';
+import { log } from '../../utils/terminal.ts';
+import { installGitHooks, isViteHooksSetupComplete } from '../migrator.ts';
+import { collectMigrationSetupPlan, type MigrationSetupPlan } from '../setup-plan.ts';
 
 vi.mock('@voidzero-dev/vite-plus-prompts', async (importOriginal) => {
   const mod = await importOriginal<typeof import('@voidzero-dev/vite-plus-prompts')>();
@@ -24,25 +27,20 @@ vi.mock('../../utils/terminal.ts', async (importOriginal) => {
   return { ...mod, log: vi.fn() };
 });
 
-const terminal = await import('../../utils/terminal.ts');
-const { collectMigrationSetupPlan } = await import('../setup-plan.js');
-const { installGitHooks, isViteHooksSetupComplete } = await import('../migrator.js');
-
 const mockSelect = vi.mocked(prompts.select);
 const mockConfirm = vi.mocked(prompts.confirm);
-const mockLog = vi.mocked(terminal.log);
+const mockLog = vi.mocked(log);
 
-const SKIP_MESSAGE = 'Git hooks already configured, skipping';
-const skipMessage = expect.stringContaining(SKIP_MESSAGE);
+const skipMessage = expect.stringContaining('Git hooks already configured, skipping');
 
-function git(cwd: string, ...args: string[]) {
+function git(cwd: string, ...args: string[]): void {
   const result = spawnSync('git', args, { cwd, stdio: 'pipe' });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed: ${result.stderr.toString()}`);
   }
 }
 
-function writePackageJson(dir: string, pkg: Record<string, unknown>) {
+function writePackageJson(dir: string, pkg: Record<string, unknown>): void {
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg));
 }
 
@@ -51,20 +49,22 @@ function readPackageJson(dir: string): { scripts?: Record<string, string> } {
 }
 
 /** Simulate what `vp config` leaves behind: dispatcher files and core.hooksPath. */
-function installDispatcher(dir: string, hookNames: string[]) {
+function installDispatcher(dir: string, hookNames: string[]): void {
   const dispatcherDir = path.join(dir, '.vite-hooks', '_');
   fs.mkdirSync(dispatcherDir, { recursive: true });
-  fs.writeFileSync(path.join(dispatcherDir, 'h'), hookScript('.vite-hooks'), { mode: 0o755 });
-  fs.chmodSync(path.join(dispatcherDir, 'h'), 0o755);
+  function writeScript(name: string, content: string): void {
+    const filePath = path.join(dispatcherDir, name);
+    fs.writeFileSync(filePath, content, { mode: 0o755 });
+    fs.chmodSync(filePath, 0o755);
+  }
+  writeScript('h', hookScript('.vite-hooks'));
   for (const hookName of hookNames) {
-    const stubPath = path.join(dispatcherDir, hookName);
-    fs.writeFileSync(stubPath, HOOK_STUB_SCRIPT, { mode: 0o755 });
-    fs.chmodSync(stubPath, 0o755);
+    writeScript(hookName, HOOK_STUB_SCRIPT);
   }
   git(dir, 'config', 'core.hooksPath', '.vite-hooks/_');
 }
 
-function expectNoHooksPrompt() {
+function expectNoHooksPrompt(): void {
   expect(mockConfirm).not.toHaveBeenCalled();
   expect(mockSelect).not.toHaveBeenCalled();
 }
@@ -82,20 +82,23 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
     vi.clearAllMocks();
   });
 
-  function writeProjectHooks() {
+  function writeProjectHooks(): void {
     fs.mkdirSync(path.join(tmpDir, '.vite-hooks'), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, '.vite-hooks', 'commit-msg'), 'echo msg\n');
     fs.writeFileSync(path.join(tmpDir, '.vite-hooks', 'pre-commit'), 'npm test\n');
   }
 
-  function setUpFullyConfiguredHooks() {
+  function setUpFullyConfiguredHooks(): void {
     git(tmpDir, 'init', '-q');
     writePackageJson(tmpDir, { scripts: { prepare: 'vp config' } });
     writeProjectHooks();
     installDispatcher(tmpDir, ['commit-msg', 'pre-commit']);
   }
 
-  function collect(options: { interactive: boolean; hooks?: boolean }) {
+  function collect(options: {
+    interactive: boolean;
+    hooks?: boolean;
+  }): Promise<MigrationSetupPlan> {
     return collectMigrationSetupPlan(
       tmpDir,
       PackageManager.pnpm,
@@ -162,18 +165,10 @@ describe('collectMigrationSetupPlan existing Vite+ hooks', () => {
       expectNoHooksPrompt();
     });
 
-    it('still honors --no-hooks', async () => {
-      const plan = await collect({ interactive: true, hooks: false });
+    it.each([true, false])('honors --hooks=%s when setup is complete', async (hooks) => {
+      const plan = await collect({ interactive: true, hooks });
 
-      expect(plan.shouldSetupHooks).toBe(false);
-      expectNoHooksPrompt();
-      expect(mockLog).not.toHaveBeenCalledWith(skipMessage);
-    });
-
-    it('still runs setup when --hooks is passed', async () => {
-      const plan = await collect({ interactive: true, hooks: true });
-
-      expect(plan.shouldSetupHooks).toBe(true);
+      expect(plan.shouldSetupHooks).toBe(hooks);
       expectNoHooksPrompt();
       expect(mockLog).not.toHaveBeenCalledWith(skipMessage);
     });

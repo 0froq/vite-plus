@@ -1,4 +1,4 @@
-import { literalArgv, literalCommands } from '../../utils/shell-command.ts';
+import { getCommandStartIndex, literalArgv, literalCommands } from '../../utils/shell-command.ts';
 import type { RewriteResult, VitestV5Finding } from './ast.ts';
 
 /** Read test commands without evaluating shell state or directory changes. */
@@ -26,16 +26,7 @@ export function literalTestCommands(command: string): string[][] | undefined {
 
 /** Locate the runner's arguments after a supported package-manager wrapper. */
 export function vitestCommandArgsStart(values: readonly string[]): number {
-  let start = 0;
-  if (['pnpm', 'npm', 'yarn', 'bun', 'npx', 'bunx'].includes(values[0])) {
-    start = 1;
-    if (values[start] === 'exec' || values[start] === 'x') {
-      start++;
-    }
-    if (values[start] === '--') {
-      start++;
-    }
-  }
+  const start = getCommandStartIndex(values);
   if (values[start] === 'vitest') {
     return start + 1;
   }

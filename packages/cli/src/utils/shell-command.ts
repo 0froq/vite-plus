@@ -4,6 +4,21 @@ export interface CommandToken {
   end: number;
 }
 
+/** Locate the executable after a supported package-manager wrapper. */
+export function getCommandStartIndex(argv: readonly string[]): number {
+  if (!['pnpm', 'npm', 'yarn', 'bun', 'npx', 'bunx'].includes(argv[0])) {
+    return 0;
+  }
+  let start = 1;
+  if (argv[start] === 'exec' || argv[start] === 'x') {
+    start++;
+  }
+  if (argv[start] === '--') {
+    start++;
+  }
+  return start;
+}
+
 /** Parse only a single literal argv command. Shell expansion, pipelines, and
  * compound commands need review; treating them as argv could change behavior. */
 export function literalArgv(command: string): CommandToken[] | undefined {
@@ -64,7 +79,7 @@ export function literalCommands(command: string): CommandToken[][] | undefined {
   const commands: CommandToken[][] = [];
   let quote = '';
   let start = 0;
-  const append = (end: number) => {
+  function appendCommand(end: number): boolean {
     const tokens = literalArgv(command.slice(start, end));
     if (!tokens?.length) {
       return false;
@@ -75,7 +90,7 @@ export function literalCommands(command: string): CommandToken[][] | undefined {
     }
     commands.push(tokens);
     return true;
-  };
+  }
   for (let index = 0; index < command.length; index++) {
     const char = command[index];
     if (char === '\\') {
@@ -89,12 +104,8 @@ export function literalCommands(command: string): CommandToken[][] | undefined {
       quote = char;
     } else if (char === '#') {
       return undefined;
-    } else if (
-      char === ';' ||
-      command.slice(index, index + 2) === '&&' ||
-      command.slice(index, index + 2) === '||'
-    ) {
-      if (!append(index)) {
+    } else if (char === ';' || command.startsWith('&&', index) || command.startsWith('||', index)) {
+      if (!appendCommand(index)) {
         return undefined;
       }
       if (char !== ';') {
@@ -103,5 +114,8 @@ export function literalCommands(command: string): CommandToken[][] | undefined {
       start = index + 1;
     }
   }
-  return !quote && append(command.length) ? commands : undefined;
+  if (quote || !appendCommand(command.length)) {
+    return undefined;
+  }
+  return commands;
 }
